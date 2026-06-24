@@ -6,18 +6,17 @@ import {
 } from 'firebase/firestore'
 
 const firebaseConfig = {
-  apiKey:            "AIzaSyAFu1VyNV_UTPm5Hkb6neI2rJkdSOwovGM",
-  authDomain:        "classroom-seats-5c20a.firebaseapp.com",
-  projectId:         "classroom-seats-5c20a",
-  storageBucket:     "classroom-seats-5c20a.firebasestorage.app",
-  messagingSenderId: "599613681446",
-  appId:             "1:599613681446:web:f84f546c59ef3b08959be7",
+  apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain:        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket:     import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId:             import.meta.env.VITE_FIREBASE_APP_ID,
 }
 
 const app = initializeApp(firebaseConfig)
 export const db = getFirestore(app)
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
 export async function fsSet(pathStr, data) {
   const parts = pathStr.split('/')
   await setDoc(doc(db, ...parts), data, { merge: true })

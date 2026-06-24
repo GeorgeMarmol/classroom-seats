@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { fsSet, fsGet, fsList, fsDel } from './firebase.js'
 
 // ─── PALETTE ────────────────────────────────────────────────────────────────
@@ -27,18 +27,162 @@ function shuffle(arr) {
   }
   return a
 }
-
 function seatLabel(idx, cols) {
   return `${String.fromCharCode(65 + Math.floor(idx / cols))}${(idx % cols) + 1}`
 }
-
 function fmtMonth(m) {
   return new Date(m + '-15').toLocaleDateString('es-DO', { month: 'long', year: 'numeric' })
 }
-
 function zone(seat, rows) {
   const r = seat.charCodeAt(0) - 65
   return r === 0 ? 'Frente' : r >= rows - 1 ? 'Fondo' : 'Centro'
+}
+
+// ─── PDF PRINT ──────────────────────────────────────────────────────────────
+function printPDF(assignment, rows, cols, month, group) {
+  const monthLabel = fmtMonth(month)
+  const assigned   = assignment.filter(s => s.student && s.student !== '__disabled__')
+
+  // Build seat grid HTML
+  let gridRows = ''
+  for (let r = 0; r < rows; r++) {
+    let cells = `<td class="row-hdr">${String.fromCharCode(65 + r)}</td>`
+    for (let c = 0; c < cols; c++) {
+      const idx  = r * cols + c
+      const seat = assignment[idx]
+      const isOff = seat?.student === '__disabled__'
+      const hasSt = seat?.student && !isOff
+      const parts = hasSt ? seat.student.split(' ') : []
+      cells += `<td class="seat ${isOff ? 'off' : hasSt ? 'filled' : 'empty'}">
+        <span class="seat-lbl">${seat?.seat || ''}</span>
+        ${hasSt ? `<span class="seat-name">${parts[0]}<br/>${parts.slice(1).join(' ')}</span>` : ''}
+        ${isOff ? '<span class="seat-name" style="color:#aaa">✕</span>' : ''}
+      </td>`
+    }
+    gridRows += `<tr>${cells}</tr>`
+  }
+
+  // Column headers
+  let colHdrs = '<td class="corner"></td>'
+  for (let c = 0; c < cols; c++) colHdrs += `<td class="col-hdr">${c + 1}</td>`
+
+  // Alphabetical list
+  const listRows = [...assigned]
+    .sort((a, b) => a.student.localeCompare(b.student))
+    .map((s, i) => `<tr><td>${i + 1}</td><td>${s.student}</td><td>${s.seat}</td></tr>`)
+    .join('')
+
+  const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<title>Asignación ${monthLabel} · ${group}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #fff; color: #1A2B5F; }
+  @page { size: A4 landscape; margin: 12mm; }
+
+  .header { display: flex; justify-content: space-between; align-items: flex-end;
+            border-bottom: 4px solid #C0282C; padding-bottom: 8px; margin-bottom: 14px; }
+  .header h1 { font-size: 18px; font-weight: 800; color: #1A2B5F; }
+  .header .meta { font-size: 11px; color: #6B7A99; text-align: right; line-height: 1.6; }
+  .tag { font-size: 9px; font-weight: 700; color: #C0282C; letter-spacing: 2px;
+         text-transform: uppercase; margin-bottom: 2px; }
+
+  .section-title { font-size: 10px; font-weight: 700; color: #6B7A99; text-transform: uppercase;
+                   letter-spacing: 1px; margin-bottom: 6px; }
+
+  .board { background: #1A2B5F; color: white; text-align: center; padding: 6px;
+           font-size: 10px; font-weight: 700; letter-spacing: 2px;
+           border-radius: 4px; margin-bottom: 8px; }
+
+  table.grid { width: 100%; border-collapse: separate; border-spacing: 3px; }
+  .corner { width: 20px; }
+  .col-hdr { text-align: center; font-size: 9px; font-weight: 700; color: #6B7A99;
+             background: #EEF1F8; border-radius: 3px; padding: 2px; }
+  .row-hdr { text-align: center; font-size: 9px; font-weight: 700; color: #6B7A99;
+             background: #EEF1F8; border-radius: 3px; width: 20px; }
+
+  .seat { text-align: center; vertical-align: middle; border-radius: 5px;
+          height: 52px; padding: 2px; }
+  .seat.filled { background: #1A2B5F; }
+  .seat.empty  { background: #EEF2FF; border: 1px solid #D4DAF0; }
+  .seat.off    { background: #CBD5E1; opacity: 0.4; }
+  .seat-lbl    { display: block; font-size: 8px; font-weight: 700;
+                 color: rgba(255,255,255,0.55); }
+  .seat.empty .seat-lbl, .seat.off .seat-lbl { color: #6B7A99; }
+  .seat-name   { display: block; font-size: 7.5px; color: white;
+                 line-height: 1.2; margin-top: 2px; }
+
+  .layout { display: flex; gap: 18px; align-items: flex-start; }
+  .map-col { flex: 1; }
+  .list-col { width: 220px; flex-shrink: 0; }
+
+  table.list { width: 100%; border-collapse: collapse; font-size: 10px; }
+  table.list th { background: #1A2B5F; color: white; padding: 5px 7px;
+                  text-align: left; font-size: 9px; font-weight: 700; }
+  table.list td { padding: 4px 7px; border-bottom: 1px solid #E8ECF4; color: #1A2B5F; }
+  table.list tr:nth-child(even) td { background: #F8F9FC; }
+  .seat-badge { display: inline-block; background: #1A2B5F; color: white;
+                border-radius: 4px; padding: 1px 5px; font-size: 8px; font-weight: 700; }
+
+  .stats { display: flex; gap: 8px; margin-top: 10px; }
+  .stat  { flex: 1; text-align: center; background: #F8F9FC; border-radius: 6px; padding: 6px 4px; }
+  .stat-n { font-size: 18px; font-weight: 800; color: #1A2B5F; }
+  .stat-l { font-size: 9px; color: #6B7A99; }
+
+  .footer { margin-top: 12px; font-size: 9px; color: #94A3B8;
+            text-align: center; border-top: 1px solid #E8ECF4; padding-top: 8px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <div class="tag">UNIROMANA · Ingeniería en Sistemas</div>
+      <h1>Asignación de Asientos</h1>
+    </div>
+    <div class="meta">
+      <strong>${group}</strong><br/>
+      ${monthLabel}<br/>
+      ${rows} filas × ${cols} columnas · ${assigned.length} estudiantes
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="map-col">
+      <div class="section-title">Mapa del Aula</div>
+      <div class="board">▲ PIZARRA / FRENTE</div>
+      <table class="grid">
+        <tr>${colHdrs}</tr>
+        ${gridRows}
+      </table>
+      <div class="stats">
+        <div class="stat"><div class="stat-n">${assigned.length}</div><div class="stat-l">Asignados</div></div>
+        <div class="stat"><div class="stat-n">${assignment.length - assigned.length - assignment.filter(s=>s.student==='__disabled__').length}</div><div class="stat-l">Vacíos</div></div>
+        <div class="stat"><div class="stat-n">${assignment.filter(s=>s.student==='__disabled__').length}</div><div class="stat-l">Bloqueados</div></div>
+      </div>
+    </div>
+
+    <div class="list-col">
+      <div class="section-title">Lista Alfabética</div>
+      <table class="list">
+        <tr><th>#</th><th>Estudiante</th><th>Asiento</th></tr>
+        ${listRows}
+      </table>
+    </div>
+  </div>
+
+  <div class="footer">
+    Generado el ${new Date().toLocaleDateString('es-DO', {day:'2-digit',month:'long',year:'numeric'})} · Sistema de Asignación de Asientos UNIROMANA
+  </div>
+
+  <script>window.onload = () => window.print()</script>
+</body>
+</html>`
+
+  const win = window.open('', '_blank')
+  win.document.write(html)
+  win.document.close()
 }
 
 // ─── SMALL COMPONENTS ───────────────────────────────────────────────────────
@@ -63,10 +207,10 @@ function Spinner({ value, onChange, min, max, label, dark }) {
 function Btn({ onClick, color, textColor, children, disabled, small, outline, dark }) {
   return (
     <button onClick={!disabled ? onClick : undefined} style={{
-      padding:     small ? '7px 13px' : '10px 18px',
-      background:  outline ? 'transparent' : disabled ? P.gray : color || P.navy,
-      color:       outline ? (dark ? P.white : P.navy) : disabled ? P.dGray : textColor || P.white,
-      border:      outline ? `1.5px solid ${dark ? P.darkBrd : P.gray}` : 'none',
+      padding:      small ? '7px 13px' : '10px 18px',
+      background:   outline ? 'transparent' : disabled ? P.gray : color || P.navy,
+      color:        outline ? (dark ? P.white : P.navy) : disabled ? P.dGray : textColor || P.white,
+      border:       outline ? `1.5px solid ${dark ? P.darkBrd : P.gray}` : 'none',
       borderRadius: 8, fontSize: small ? 12 : 13, fontWeight: 700,
       cursor: disabled ? 'not-allowed' : 'pointer',
     }}>{children}</button>
@@ -97,16 +241,14 @@ export default function App() {
   const [toast,       setToast]       = useState(null)
   const [saving,      setSaving]      = useState(false)
   const [loading,     setLoading]     = useState(true)
-  const [delConfirm,  setDelConfirm]  = useState(null)
+  const [delConfirm,  setDelConfirm]  = useState(null)   // { type:'history'|'group', id }
 
-  // ── theme shortcuts ──
   const bg   = dark ? P.dark     : P.cream
   const card = dark ? P.darkCard : P.white
   const brd  = dark ? P.darkBrd  : P.gray
   const txt  = dark ? P.white    : P.navy
   const sub  = dark ? '#94A3B8'  : P.dGray
 
-  // ── derived ──
   const total        = rows * cols
   const names        = namesRaw.split('\n').map(n => n.trim()).filter(Boolean)
   const activeSeatCt = total - disabled.size
@@ -120,7 +262,6 @@ export default function App() {
   const seatH   = cols <= 5 ? 66 : cols <= 7 ? 58 : cols <= 9 ? 50 : 44
   const nameFsz = cols <= 6 ? 9 : 8
 
-  // ── toast ──
   function showToast(msg, type = 'ok') {
     setToast({ msg, type })
     setTimeout(() => setToast(null), 2800)
@@ -132,20 +273,25 @@ export default function App() {
       try {
         const cfg = await fsGet('config/classroom')
         if (cfg) {
-          if (cfg.groups)    setGroups(cfg.groups)
-          if (cfg.activeGrp) setActiveGrp(cfg.activeGrp)
-          if (cfg.rows)      setRows(cfg.rows)
-          if (cfg.cols)      setCols(cfg.cols)
-          if (cfg.namesRaw)  setNamesRaw(cfg.namesRaw)
+          if (cfg.groups)       setGroups(cfg.groups)
+          if (cfg.activeGrp)    setActiveGrp(cfg.activeGrp)
+          if (cfg.rows)         setRows(cfg.rows)
+          if (cfg.cols)         setCols(cfg.cols)
+          if (cfg.namesRaw)     setNamesRaw(cfg.namesRaw)
           if (cfg.dark != null) setDark(cfg.dark)
-          if (cfg.locked)    setLocked(cfg.locked)
-          if (cfg.disabled)  setDisabled(new Set(cfg.disabled))
+          if (cfg.locked)       setLocked(cfg.locked)
+          if (cfg.disabled)     setDisabled(new Set(cfg.disabled))
         }
         const histDocs = await fsList('history')
         const h = {}
-        histDocs.forEach(d => { h[d.id] = d.seats })
+        histDocs.forEach(d => {
+          // Support both old format (just seats array) and new format (object with seats+group+month)
+          if (Array.isArray(d.seats)) {
+            h[d.id] = { seats: d.seats, group: d.group || '?', month: d.month || d.id.split('_')[0] }
+          }
+        })
         setHistory(h)
-      } catch (e) {
+      } catch {
         showToast('Error al conectar con Firebase', 'err')
       }
       setLoading(false)
@@ -169,13 +315,12 @@ export default function App() {
 
   // ── Assign ──
   const assign = useCallback(async () => {
-    const available = Array.from({ length: total }, (_, i) => i).filter(i => !disabled.has(i))
-    const lockedSeats = {}, lockedNames = new Set()
+    const available    = Array.from({ length: total }, (_, i) => i).filter(i => !disabled.has(i))
+    const lockedSeats  = {}, lockedNames = new Set()
     available.forEach(i => {
       const lbl = seatLabel(i, cols)
       if (locked[lbl] && names.includes(locked[lbl])) {
-        lockedSeats[i] = locked[lbl]
-        lockedNames.add(locked[lbl])
+        lockedSeats[i] = locked[lbl]; lockedNames.add(locked[lbl])
       }
     })
     const freeSlots = available.filter(i => !lockedSeats[i])
@@ -193,10 +338,10 @@ export default function App() {
 
     setSaving(true)
     try {
-      await fsSet(`history/${month}`, {
-        seats: result, group: activeGrp, savedAt: new Date().toISOString(),
-      })
-      setHistory(prev => ({ ...prev, [month]: result }))
+      // Key: "2026-06_Logica" — each group+month gets its own record
+      const histKey = `${month}_${activeGrp.replace(/[^a-zA-Z0-9]/g, '_')}`
+      await fsSet(`history/${histKey}`, { seats: result, group: activeGrp, month, savedAt: new Date().toISOString() })
+      setHistory(prev => ({ ...prev, [histKey]: { seats: result, group: activeGrp, month } }))
       showToast('Guardado en Firebase ☁️')
     } catch {
       showToast('Error al guardar asignación', 'err')
@@ -211,10 +356,29 @@ export default function App() {
       await fsDel(`history/${m}`)
       setHistory(prev => { const n = { ...prev }; delete n[m]; return n })
       showToast('Registro eliminado')
-    } catch {
-      showToast('Error al eliminar', 'err')
-    }
+    } catch { showToast('Error al eliminar', 'err') }
     setSaving(false)
+    setDelConfirm(null)
+  }
+
+  // ── Delete group ──
+  function deleteGroup(g) {
+    if (Object.keys(groups).length === 1) {
+      showToast('Debe haber al menos un grupo', 'err')
+      setDelConfirm(null)
+      return
+    }
+    const newGroups = { ...groups }
+    delete newGroups[g]
+    const nextGrp = Object.keys(newGroups)[0]
+    setGroups(newGroups)
+    setActiveGrp(nextGrp)
+    setRows(newGroups[nextGrp].rows)
+    setCols(newGroups[nextGrp].cols)
+    setNamesRaw(newGroups[nextGrp].names)
+    setDisabled(new Set())
+    setAssignment(null)
+    showToast(`Grupo "${g}" eliminado`)
     setDelConfirm(null)
   }
 
@@ -240,13 +404,12 @@ export default function App() {
     reader.readAsText(file); e.target.value = ''
   }
 
-  // ── Status label ──
   let statusColor = sub, statusMsg = 'Agrega estudiantes a la lista'
-  if (names.length > 0 && diff > 0)  { statusColor = P.red;   statusMsg = `⚠ ${diff} estudiante(s) sin asiento` }
-  else if (names.length > 0 && diff < 0) { statusColor = P.amber; statusMsg = `ℹ ${Math.abs(diff)} asiento(s) vacíos` }
-  else if (names.length > 0)          { statusColor = P.green; statusMsg = '✓ Lista completa' }
+  if (names.length > 0 && diff > 0)       { statusColor = P.red;   statusMsg = `⚠ ${diff} estudiante(s) sin asiento` }
+  else if (names.length > 0 && diff < 0)  { statusColor = P.amber; statusMsg = `ℹ ${Math.abs(diff)} asiento(s) vacíos` }
+  else if (names.length > 0)              { statusColor = P.green; statusMsg = '✓ Lista completa' }
 
-  // ─── LOADING SCREEN ──────────────────────────────────────────────────────
+  // ─── LOADING ──────────────────────────────────────────────────────────────
   if (loading) return (
     <div style={{ minHeight: '100vh', background: P.navy, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16 }}>
       <div style={{ fontSize: 40 }}>🏫</div>
@@ -258,31 +421,39 @@ export default function App() {
     </div>
   )
 
-  // ─── MAIN RENDER ─────────────────────────────────────────────────────────
+  // ─── RENDER ───────────────────────────────────────────────────────────────
   return (
     <div style={{ minHeight: '100vh', background: bg, color: txt, transition: 'background 0.2s' }}>
 
       {/* TOAST */}
       {toast && (
-        <div style={{
-          position: 'fixed', top: 18, right: 18, zIndex: 9999,
-          background: toast.type === 'ok' ? P.green : P.red,
-          color: P.white, padding: '11px 20px', borderRadius: 10,
-          fontSize: 13, fontWeight: 700, boxShadow: '0 4px 20px rgba(0,0,0,0.25)',
-          animation: 'fadein 0.2s',
-        }}>{toast.msg}</div>
+        <div style={{ position: 'fixed', top: 18, right: 18, zIndex: 9999, background: toast.type === 'ok' ? P.green : P.red, color: P.white, padding: '11px 20px', borderRadius: 10, fontSize: 13, fontWeight: 700, boxShadow: '0 4px 20px rgba(0,0,0,0.25)', animation: 'fadein 0.2s' }}>
+          {toast.msg}
+        </div>
       )}
 
-      {/* DELETE MODAL */}
+      {/* CONFIRM MODAL — reutilizable para grupo e historial */}
       {delConfirm && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: card, borderRadius: 16, padding: 28, maxWidth: 340, width: '90%', boxShadow: '0 8px 40px rgba(0,0,0,0.3)' }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: txt, marginBottom: 8 }}>¿Eliminar registro?</div>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: card, borderRadius: 16, padding: 28, maxWidth: 360, width: '90%', boxShadow: '0 8px 40px rgba(0,0,0,0.3)' }}>
+            <div style={{ fontSize: 22, marginBottom: 10 }}>
+              {delConfirm.type === 'group' ? '🗂' : '📅'}
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: txt, marginBottom: 8 }}>
+              {delConfirm.type === 'group' ? '¿Eliminar grupo?' : '¿Eliminar registro?'}
+            </div>
             <div style={{ fontSize: 13, color: sub, marginBottom: 20 }}>
-              Se eliminará la asignación de <strong>{fmtMonth(delConfirm)}</strong> de Firebase. No se puede deshacer.
+              {delConfirm.type === 'group'
+                ? <>Se eliminará el grupo <strong>"{delConfirm.id}"</strong> y su lista de estudiantes. El historial de asignaciones se conserva.</>
+                : <>Se eliminará la asignación de <strong>{fmtMonth(delConfirm.id)}</strong> de Firebase. No se puede deshacer.</>
+              }
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
-              <Btn color={P.red} onClick={() => deleteHistory(delConfirm)}>Sí, eliminar</Btn>
+              <Btn color={P.red} onClick={() =>
+                delConfirm.type === 'group'
+                  ? deleteGroup(delConfirm.id)
+                  : deleteHistory(delConfirm.id)
+              }>Sí, eliminar</Btn>
               <Btn outline dark={dark} onClick={() => setDelConfirm(null)}>Cancelar</Btn>
             </div>
           </div>
@@ -343,22 +514,44 @@ export default function App() {
                 <div style={{ fontSize: 11, fontWeight: 700, color: sub, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>Grupos / Materias</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
                   {Object.keys(groups).map(g => (
-                    <button key={g} onClick={() => {
-                      setGroups(prev => ({ ...prev, [activeGrp]: { rows, cols, names: namesRaw } }))
-                      setActiveGrp(g); setRows(groups[g].rows); setCols(groups[g].cols)
-                      setNamesRaw(groups[g].names); setDisabled(new Set()); setAssignment(null)
-                    }} style={{
-                      padding: '5px 12px', borderRadius: 20,
-                      border: `1.5px solid ${g === activeGrp ? P.red : brd}`,
-                      background: g === activeGrp ? P.red : 'transparent',
-                      color: g === activeGrp ? P.white : txt,
-                      fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                    }}>{g}</button>
+                    <div key={g} style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+                      <button onClick={() => {
+                        setGroups(prev => ({ ...prev, [activeGrp]: { rows, cols, names: namesRaw } }))
+                        setActiveGrp(g); setRows(groups[g].rows); setCols(groups[g].cols)
+                        setNamesRaw(groups[g].names); setDisabled(new Set()); setAssignment(null)
+                      }} style={{
+                        padding: '5px 10px', borderRadius: g === activeGrp ? '20px 0 0 20px' : 20,
+                        border: `1.5px solid ${g === activeGrp ? P.red : brd}`,
+                        borderRight: g === activeGrp ? 'none' : `1.5px solid ${brd}`,
+                        background: g === activeGrp ? P.red : 'transparent',
+                        color: g === activeGrp ? P.white : txt,
+                        fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                      }}>{g}</button>
+                      {/* Delete button only for active group */}
+                      {g === activeGrp && (
+                        <button
+                          onClick={() => setDelConfirm({ type: 'group', id: g })}
+                          title={`Eliminar grupo "${g}"`}
+                          style={{
+                            padding: '5px 8px', borderRadius: '0 20px 20px 0',
+                            border: `1.5px solid ${P.red}`, borderLeft: 'none',
+                            background: P.red, color: P.white,
+                            fontSize: 11, cursor: 'pointer', lineHeight: 1,
+                          }}>✕</button>
+                      )}
+                    </div>
                   ))}
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
                   <input value={newGrpName} onChange={e => setNewGrpName(e.target.value)}
                     placeholder="Nuevo grupo..."
+                    onKeyDown={e => {
+                      if (e.key !== 'Enter' || !newGrpName.trim()) return
+                      const g = newGrpName.trim()
+                      setGroups(prev => ({ ...prev, [activeGrp]: { rows, cols, names: namesRaw }, [g]: { rows: 5, cols: 6, names: '' } }))
+                      setActiveGrp(g); setRows(5); setCols(6); setNamesRaw('')
+                      setNewGrpName(''); setDisabled(new Set()); setAssignment(null)
+                    }}
                     style={{ flex: 1, padding: '7px 10px', borderRadius: 7, border: `1.5px solid ${brd}`, background: bg, color: txt, fontSize: 12 }} />
                   <Btn small color={P.blue} onClick={() => {
                     if (!newGrpName.trim()) return
@@ -417,7 +610,7 @@ export default function App() {
                   <Btn color={P.red} disabled={names.length === 0} onClick={assign}>
                     {saving ? '⏳ Guardando...' : '🎲 Asignar Aleatoriamente'}
                   </Btn>
-                  <Btn small outline dark={dark} onClick={() => saveConfig()}>💾 Guardar config</Btn>
+                  <Btn small outline dark={dark} onClick={() => saveConfig()}>💾 Guardar</Btn>
                 </div>
               </div>
             </div>
@@ -441,11 +634,7 @@ export default function App() {
                   )}
                 </div>
               </div>
-
-              <div style={{ background: P.navy, color: P.white, borderRadius: 8, textAlign: 'center', padding: '8px', fontSize: 11, fontWeight: 700, marginBottom: 14, letterSpacing: 2 }}>
-                ▲ PIZARRA / FRENTE
-              </div>
-
+              <div style={{ background: P.navy, color: P.white, borderRadius: 8, textAlign: 'center', padding: '8px', fontSize: 11, fontWeight: 700, marginBottom: 14, letterSpacing: 2 }}>▲ PIZARRA / FRENTE</div>
               <div style={{ display: 'grid', gridTemplateColumns: `22px repeat(${cols},1fr)`, gap: 4, marginBottom: 3 }}>
                 <div />
                 {Array.from({ length: cols }, (_, i) => (
@@ -460,7 +649,8 @@ export default function App() {
                   {Array.from({ length: cols }, (_, c) => {
                     const idx = r * cols + c, isOff = disabled.has(idx)
                     return (
-                      <div key={c} onClick={() => editMode && setDisabled(prev => { const n = new Set(prev); n.has(idx) ? n.delete(idx) : n.add(idx); return n })}
+                      <div key={c}
+                        onClick={() => editMode && setDisabled(prev => { const n = new Set(prev); n.has(idx) ? n.delete(idx) : n.add(idx); return n })}
                         style={{ background: isOff ? (dark ? '#374151' : '#CBD5E1') : (dark ? '#1E3A5F' : '#EEF2FF'), borderRadius: 6, height: seatH, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', border: editMode ? `1.5px dashed ${P.purple}` : `1.5px solid ${dark ? '#334155' : '#D4DAF0'}`, cursor: editMode ? 'pointer' : 'default', opacity: isOff ? 0.45 : 1 }}>
                         <div style={{ fontSize: 10, fontWeight: 700, color: dark ? P.white : P.navy }}>{String.fromCharCode(65 + r)}{c + 1}</div>
                         {isOff && <div style={{ fontSize: 8, color: P.red, marginTop: 1 }}>✕</div>}
@@ -486,16 +676,17 @@ export default function App() {
             </div>
           ) : (
             <div>
-              <div style={{ background: card, borderRadius: 12, padding: '12px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, boxShadow: '0 2px 10px rgba(0,0,0,0.06)' }}>
+              <div style={{ background: card, borderRadius: 12, padding: '12px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, boxShadow: '0 2px 10px rgba(0,0,0,0.06)', flexWrap: 'wrap', gap: 10 }}>
                 <div>
                   <div style={{ fontSize: 16, fontWeight: 700, color: txt }}>Asignación — {fmtMonth(month)}</div>
-                  <div style={{ fontSize: 11, color: sub, marginTop: 2 }}>{names.length} estudiantes · {activeGrp} · ☁️ guardado en Firebase</div>
+                  <div style={{ fontSize: 11, color: sub, marginTop: 2 }}>{names.length} estudiantes · {activeGrp} · ☁️ Firebase</div>
                 </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <input value={search} onChange={e => setSearch(e.target.value)}
                     placeholder="🔍 Buscar estudiante..."
-                    style={{ padding: '7px 12px', borderRadius: 8, border: `1.5px solid ${brd}`, background: bg, color: txt, fontSize: 12, width: 180 }} />
+                    style={{ padding: '7px 12px', borderRadius: 8, border: `1.5px solid ${brd}`, background: bg, color: txt, fontSize: 12, width: 160 }} />
                   <Btn small color={P.amber} onClick={assign}>{saving ? '⏳' : '🔀'} Re-asignar</Btn>
+                  <Btn small color={P.green} onClick={() => printPDF(assignment, rows, cols, month, activeGrp)}>🖨 PDF</Btn>
                   <Btn small outline dark={dark} onClick={() => setTab('config')}>← Config</Btn>
                 </div>
               </div>
@@ -548,7 +739,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* SIDE LIST */}
+                {/* SIDE */}
                 <div style={{ background: card, borderRadius: 14, padding: 18, boxShadow: '0 2px 14px rgba(0,0,0,0.07)', display: 'flex', flexDirection: 'column', gap: 12 }}>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                     {[['Asignados', names.length, P.navy], ['Vacíos', activeSeatCt - names.length, P.amber], ['Bloqueados', disabled.size, P.red], ['Total', total, P.blue]].map(([l, v, c]) => (
@@ -582,7 +773,10 @@ export default function App() {
                       )
                     })}
                   </div>
-                  <Btn color={P.green} onClick={copyList}>📋 Copiar lista</Btn>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                    <Btn color={P.green} onClick={copyList}>📋 Copiar lista</Btn>
+                    <Btn color={P.navy} outline={false} onClick={() => printPDF(assignment, rows, cols, month, activeGrp)}>🖨 Imprimir / Guardar PDF</Btn>
+                  </div>
                 </div>
               </div>
             </div>
@@ -601,21 +795,29 @@ export default function App() {
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-                {Object.entries(history).sort(([a], [b]) => b.localeCompare(a)).map(([m, seats]) => {
+                {Object.entries(history).sort(([a], [b]) => b.localeCompare(a)).map(([key, record]) => {
+                  const seats    = record.seats || []
+                  const grpName  = record.group || '?'
+                  const mon      = record.month || key.split('_')[0]
+                  const hCols    = seats.length > 0 ? Math.max(...seats.map(s => parseInt(s.seat.slice(1)) || 1)) : cols
                   const assigned = seats.filter(s => s.student && s.student !== '__disabled__')
                   return (
-                    <div key={m} style={{ background: card, borderRadius: 14, padding: 20, boxShadow: '0 2px 14px rgba(0,0,0,0.07)' }}>
+                    <div key={key} style={{ background: card, borderRadius: 14, padding: 20, boxShadow: '0 2px 14px rgba(0,0,0,0.07)' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                         <div>
-                          <div style={{ fontSize: 15, fontWeight: 700, color: txt }}>{fmtMonth(m)}</div>
-                          <div style={{ fontSize: 12, color: sub, marginTop: 2 }}>{assigned.length} estudiantes</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <div style={{ fontSize: 15, fontWeight: 700, color: txt }}>{fmtMonth(mon)}</div>
+                            <span style={{ background: P.red, color: P.white, borderRadius: 20, padding: '2px 10px', fontSize: 11, fontWeight: 700 }}>{grpName}</span>
+                          </div>
+                          <div style={{ fontSize: 12, color: sub, marginTop: 2 }}>{assigned.length} estudiantes asignados</div>
                         </div>
                         <div style={{ display: 'flex', gap: 8 }}>
                           <Btn small color={P.navy} onClick={() => { setAssignment(seats); setTab('result') }}>Ver mapa</Btn>
-                          <Btn small color={P.red} onClick={() => setDelConfirm(m)}>🗑 Eliminar</Btn>
+                          <Btn small color={P.green} onClick={() => printPDF(seats, rows, cols, mon, grpName)}>🖨 PDF</Btn>
+                          <Btn small color={P.red} onClick={() => setDelConfirm({ type: 'history', id: key })}>🗑 Eliminar</Btn>
                         </div>
                       </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols},1fr)`, gap: 3 }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${hCols},1fr)`, gap: 3 }}>
                         {seats.map((s, i) => {
                           const isOff = s.student === '__disabled__', has = s.student && !isOff
                           return (
